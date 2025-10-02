@@ -259,17 +259,8 @@ export default function ThreeD() {
       const ctx = canvasRef.current.getContext('2d');
       const { scale, drawX, drawY, videoW, videoH } = renderStateRef.current;
       
-      // Clear canvas and draw video with cover scaling
+      // Clear canvas (do not draw the camera frame)
       ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-      if (videoW && videoH) {
-        ctx.drawImage(
-          videoRef.current,
-          drawX,
-          drawY,
-          videoW * scale,
-          videoH * scale
-        );
-      }
       
       if (poses && poses.length > 0) {
         const mappedKeypoints = poses[0].keypoints.map(kp => ({ ...kp, x: kp.x * scale + drawX, y: kp.y * scale + drawY }));
@@ -542,6 +533,10 @@ export default function ThreeD() {
   return (
     <div className="min-h-screen bg-black flex items-center justify-center relative">
       {/* No on-screen <video>; we render camera frames directly into canvas */}
+      {/* Light dotted grid background */}
+      <div
+        className="fixed inset-0 z-0 pointer-events-none [background-image:radial-gradient(rgba(255,255,255,0.15)_1px,transparent_1px)] [background-size:24px_24px] [background-position:0_0]"
+      />
       
       {/* Canvas overlay for pose detection */}
       <canvas
