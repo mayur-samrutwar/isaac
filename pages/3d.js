@@ -10,6 +10,10 @@ export default function ThreeD() {
   const [isLoading, setIsLoading] = useState(false);
   const [detector, setDetector] = useState(null);
   const animationFrameRef = useRef(null);
+  const smoothedKeypointsRef = useRef({});
+  const [infoCollapsed, setInfoCollapsed] = useState(false);
+  const renderStateRef = useRef({ scale: 1, drawX: 0, drawY: 0, videoW: 0, videoH: 0 });
+  const resizeHandlerRef = useRef(null);
   
   // Body tracking state
   const [trackedBodyParts, setTrackedBodyParts] = useState({});
@@ -32,6 +36,7 @@ export default function ThreeD() {
 
   const updateBodyPartTracking = (keypoints) => {
     const newTrackedParts = {};
+    const smoothingFactor = 0.7; // higher = smoother but laggier
     const collisionAreas = {
       left_wrist: 40, right_wrist: 40,
       left_ankle: 35, right_ankle: 35,
@@ -43,10 +48,17 @@ export default function ThreeD() {
     };
 
     Object.keys(collisionAreas).forEach(bodyPart => {
-      const position = getBodyPartPosition(keypoints, bodyPart);
-      if (position) {
+      const raw = getBodyPartPosition(keypoints, bodyPart);
+      if (raw) {
+        const prev = smoothedKeypointsRef.current[bodyPart] || raw;
+        const smoothed = {
+          x: prev.x * smoothingFactor + raw.x * (1 - smoothingFactor),
+          y: prev.y * smoothingFactor + raw.y * (1 - smoothingFactor),
+          score: raw.score
+        };
+        smoothedKeypointsRef.current[bodyPart] = smoothed;
         newTrackedParts[bodyPart] = {
-          ...position,
+          ...smoothed,
           radius: collisionAreas[bodyPart],
           lastUpdate: Date.now()
         };
@@ -222,15 +234,25 @@ export default function ThreeD() {
     try {
       const poses = await detector.estimatePoses(videoRef.current);
       const ctx = canvasRef.current.getContext('2d');
+      const { scale, drawX, drawY, videoW, videoH } = renderStateRef.current;
       
-      // Clear canvas
+      // Clear canvas and draw video with cover scaling
       ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+      if (videoW && videoH) {
+        ctx.drawImage(
+          videoRef.current,
+          drawX,
+          drawY,
+          videoW * scale,
+          videoH * scale
+        );
+      }
       
       if (poses && poses.length > 0) {
-        const keypoints = poses[0].keypoints;
+        const mappedKeypoints = poses[0].keypoints.map(kp => ({ ...kp, x: kp.x * scale + drawX, y: kp.y * scale + drawY }));
         
         // Update body part tracking
-        const trackedParts = updateBodyPartTracking(keypoints);
+        const trackedParts = updateBodyPartTracking(mappedKeypoints);
         
         // Example: Check for collisions with virtual targets
         // You can replace this with your game objects
@@ -256,8 +278,9 @@ export default function ThreeD() {
         ctx.restore();
       }
       
-      // Draw pose with enhanced tracking
-      drawPose(poses, ctx);
+      // Draw pose with enhanced tracking using mapped keypoints
+      const mappedPoses = poses && poses.length > 0 ? [{ keypoints: poses[0].keypoints.map(kp => ({ ...kp, x: kp.x * scale + drawX, y: kp.y * scale + drawY })) }] : poses;
+      drawPose(mappedPoses, ctx);
       
       // Draw collision events as visual feedback
       drawCollisionFeedback(ctx);
@@ -305,40 +328,55 @@ export default function ThreeD() {
       });
       console.log('Camera stream obtained:', stream);
 
-      if (videoRef.current) {
-        console.log('Setting video source...');
-        videoRef.current.srcObject = stream;
-        
-        videoRef.current.onloadedmetadata = async () => {
-          console.log('Video metadata loaded, dimensions:', videoRef.current.videoWidth, 'x', videoRef.current.videoHeight);
-          
-          // Set canvas dimensions to match video
-          if (canvasRef.current) {
-            canvasRef.current.width = videoRef.current.videoWidth;
-            canvasRef.current.height = videoRef.current.videoHeight;
-          }
-          
-          // Initialize pose detection
-          await initializePoseDetection();
-          
-          setCameraActive(true);
-          setIsLoading(false);
-        };
-
-        videoRef.current.oncanplay = () => {
-          console.log('Video can play');
-        };
-
-        videoRef.current.onerror = (err) => {
-          console.error('Video error:', err);
-          setError('Video error');
-          setIsLoading(false);
-        };
-      } else {
-        console.error('Video ref is null');
-        setError('Video element not found');
-        setIsLoading(false);
+      // Create an off-DOM video element for processing
+      if (!videoRef.current) {
+        videoRef.current = document.createElement('video');
       }
+      const v = videoRef.current;
+      v.autoplay = true;
+      v.muted = true;
+      v.playsInline = true;
+      v.srcObject = stream;
+
+      v.onloadedmetadata = async () => {
+        console.log('Video metadata loaded, dimensions:', v.videoWidth, 'x', v.videoHeight);
+        
+        const setupCanvasSizing = () => {
+          if (!canvasRef.current) return;
+          const dpr = window.devicePixelRatio || 1;
+          const cssW = window.innerWidth;
+          const cssH = window.innerHeight;
+          canvasRef.current.style.width = cssW + 'px';
+          canvasRef.current.style.height = cssH + 'px';
+          canvasRef.current.width = Math.round(cssW * dpr);
+          canvasRef.current.height = Math.round(cssH * dpr);
+          const ctx = canvasRef.current.getContext('2d');
+          if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+          const scale = Math.max(cssW / v.videoWidth, cssH / v.videoHeight);
+          const drawW = v.videoWidth * scale;
+          const drawH = v.videoHeight * scale;
+          const drawX = (cssW - drawW) / 2;
+          const drawY = (cssH - drawH) / 2;
+          renderStateRef.current = { scale, drawX, drawY, videoW: v.videoWidth, videoH: v.videoHeight };
+        };
+
+        setupCanvasSizing();
+        resizeHandlerRef.current = setupCanvasSizing;
+        window.addEventListener('resize', resizeHandlerRef.current);
+
+        // Initialize pose detection
+        await initializePoseDetection();
+
+        setCameraActive(true);
+        setIsLoading(false);
+      };
+
+      v.onerror = (err) => {
+        console.error('Video error:', err);
+        setError('Video error');
+        setIsLoading(false);
+      };
     } catch (err) {
       console.error('Camera error:', err);
       setError('Camera access denied or not available');
@@ -361,6 +399,10 @@ export default function ThreeD() {
     }
     
     setCameraActive(false);
+    if (resizeHandlerRef.current) {
+      window.removeEventListener('resize', resizeHandlerRef.current);
+      resizeHandlerRef.current = null;
+    }
   };
 
   useEffect(() => {
@@ -400,22 +442,12 @@ export default function ThreeD() {
 
   return (
     <div className="min-h-screen bg-black flex items-center justify-center relative">
-      {/* Video element - always present */}
-      <video
-        ref={videoRef}
-        className={cameraActive ? "w-full h-screen object-cover absolute top-0 left-0 z-10" : "hidden"}
-        style={{ 
-          transform: cameraActive ? 'scaleX(-1)' : 'none'
-        }}
-        autoPlay
-        playsInline
-        muted
-      />
+      {/* No on-screen <video>; we render camera frames directly into canvas */}
       
       {/* Canvas overlay for pose detection */}
       <canvas
         ref={canvasRef}
-        className={cameraActive ? "absolute top-0 left-0 z-20 pointer-events-none" : "hidden"}
+        className={cameraActive ? "fixed inset-0 z-10 pointer-events-none" : "hidden"}
         style={{
           transform: cameraActive ? 'scaleX(-1)' : 'none'
         }}
@@ -433,10 +465,19 @@ export default function ThreeD() {
         </div>
       )}
 
-      {/* Body tracking stats overlay */}
-      {cameraActive && (
+      {/* Body tracking stats overlay (collapsible) */}
+      {cameraActive && !infoCollapsed && (
         <div className="absolute top-4 left-4 z-20 bg-black/80 text-white p-4 rounded-lg font-mono text-sm max-w-xs">
-          <h3 className="text-lg font-bold mb-2 text-yellow-400">Body Tracking</h3>
+          <div className="flex items-start justify-between gap-6 mb-2">
+            <h3 className="text-lg font-bold text-yellow-400">Body Tracking</h3>
+            <button
+              onClick={() => setInfoCollapsed(true)}
+              className="text-gray-300 hover:text-white w-6 h-6 rounded flex items-center justify-center border border-gray-600 hover:border-gray-400"
+              aria-label="Collapse info"
+            >
+              −
+            </button>
+          </div>
           
           <div className="space-y-1">
             <div className="text-yellow-300">Primary (Hands):</div>
@@ -482,6 +523,17 @@ export default function ThreeD() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Collapsed floating toggle */}
+      {cameraActive && infoCollapsed && (
+        <button
+          onClick={() => setInfoCollapsed(false)}
+          className="absolute top-4 left-4 z-20 bg-black/70 text-white w-8 h-8 rounded-full font-mono text-sm flex items-center justify-center border border-white/20 hover:bg-black/80"
+          aria-label="Expand info"
+        >
+          i
+        </button>
       )}
 
       {/* Button interface when camera is not active */}
