@@ -257,9 +257,9 @@ export default function ThreeD() {
         // Example: Check for collisions with virtual targets
         // You can replace this with your game objects
         const virtualTargets = [
-          { id: 'target1', position: { x: 200, y: 200 }, radius: 30 },
-          { id: 'target2', position: { x: 400, y: 300 }, radius: 25 },
-          { id: 'target3', position: { x: 600, y: 150 }, radius: 35 }
+          // { id: 'target1', position: { x: 200, y: 200 }, radius: 30 },
+          // { id: 'target2', position: { x: 400, y: 300 }, radius: 25 },
+          // { id: 'target3', position: { x: 600, y: 150 }, radius: 35 }
         ];
         
         detectBodyCollisions(trackedParts, virtualTargets);
