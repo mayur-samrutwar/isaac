@@ -1,4 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
+import * as tf from '@tensorflow/tfjs';
+import * as poseDetection from '@tensorflow-models/pose-detection';
 
 export default function ThreeD() {
   const videoRef = useRef(null);
@@ -6,6 +8,290 @@ export default function ThreeD() {
   const [cameraActive, setCameraActive] = useState(false);
   const [error, setError] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [detector, setDetector] = useState(null);
+  const animationFrameRef = useRef(null);
+  
+  // Body tracking state
+  const [trackedBodyParts, setTrackedBodyParts] = useState({});
+  const [collisionEvents, setCollisionEvents] = useState([]);
+  const [bodyPartStats, setBodyPartStats] = useState({});
+
+  // Body tracking utilities
+  const getBodyPartPosition = (keypoints, bodyPartName) => {
+    const keypoint = keypoints.find(kp => kp.name === bodyPartName);
+    return keypoint && keypoint.score > 0.3 ? { x: keypoint.x, y: keypoint.y, score: keypoint.score } : null;
+  };
+
+  const checkCollision = (bodyPartPos, targetPos, radius) => {
+    if (!bodyPartPos || !targetPos) return false;
+    const dx = bodyPartPos.x - targetPos.x;
+    const dy = bodyPartPos.y - targetPos.y;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    return distance < radius;
+  };
+
+  const updateBodyPartTracking = (keypoints) => {
+    const newTrackedParts = {};
+    const collisionAreas = {
+      left_wrist: 40, right_wrist: 40,
+      left_ankle: 35, right_ankle: 35,
+      nose: 30,
+      left_elbow: 25, right_elbow: 25,
+      left_knee: 25, right_knee: 25,
+      left_shoulder: 20, right_shoulder: 20,
+      left_hip: 20, right_hip: 20
+    };
+
+    Object.keys(collisionAreas).forEach(bodyPart => {
+      const position = getBodyPartPosition(keypoints, bodyPart);
+      if (position) {
+        newTrackedParts[bodyPart] = {
+          ...position,
+          radius: collisionAreas[bodyPart],
+          lastUpdate: Date.now()
+        };
+      }
+    });
+
+    setTrackedBodyParts(newTrackedParts);
+    return newTrackedParts;
+  };
+
+  const detectBodyCollisions = (trackedParts, targets) => {
+    const newCollisions = [];
+    
+    targets.forEach(target => {
+      Object.entries(trackedParts).forEach(([bodyPart, bodyPartData]) => {
+        if (checkCollision(bodyPartData, target.position, bodyPartData.radius + target.radius)) {
+          newCollisions.push({
+            bodyPart,
+            target: target.id,
+            timestamp: Date.now(),
+            position: bodyPartData
+          });
+        }
+      });
+    });
+
+    if (newCollisions.length > 0) {
+      setCollisionEvents(prev => [...prev, ...newCollisions].slice(-50)); // Keep last 50 events
+    }
+  };
+
+  // Initialize TensorFlow.js and pose detection
+  const initializePoseDetection = async () => {
+    try {
+      console.log('Initializing TensorFlow.js...');
+      await tf.ready();
+      await tf.setBackend('webgl');
+      
+      console.log('Loading MoveNet model...');
+      const poseDetector = await poseDetection.createDetector(
+        poseDetection.SupportedModels.MoveNet,
+        { modelType: poseDetection.movenet.modelType.SINGLEPOSE_THUNDER }
+      );
+      
+      setDetector(poseDetector);
+      console.log('Pose detection initialized successfully');
+    } catch (err) {
+      console.error('Error initializing pose detection:', err);
+      setError('Failed to initialize pose detection');
+    }
+  };
+
+  // Enhanced body tracking with collision detection areas
+  const drawPose = (poses, ctx) => {
+    if (!poses || poses.length === 0) return;
+
+    const pose = poses[0];
+    const keypoints = pose.keypoints;
+
+    // Define collision detection areas for different body parts
+    const collisionAreas = {
+      // Hands - primary interaction points
+      left_wrist: { radius: 40, color: 'rgba(255, 255, 0, 0.3)', strokeColor: 'rgba(255, 255, 0, 0.8)' },
+      right_wrist: { radius: 40, color: 'rgba(255, 255, 0, 0.3)', strokeColor: 'rgba(255, 255, 0, 0.8)' },
+      
+      // Feet - secondary interaction points
+      left_ankle: { radius: 35, color: 'rgba(0, 255, 255, 0.3)', strokeColor: 'rgba(0, 255, 255, 0.8)' },
+      right_ankle: { radius: 35, color: 'rgba(0, 255, 255, 0.3)', strokeColor: 'rgba(0, 255, 255, 0.8)' },
+      
+      // Head - special interaction point
+      nose: { radius: 30, color: 'rgba(255, 0, 255, 0.3)', strokeColor: 'rgba(255, 0, 255, 0.8)' },
+      
+      // Elbows and knees - tertiary interaction points
+      left_elbow: { radius: 25, color: 'rgba(255, 165, 0, 0.3)', strokeColor: 'rgba(255, 165, 0, 0.8)' },
+      right_elbow: { radius: 25, color: 'rgba(255, 165, 0, 0.3)', strokeColor: 'rgba(255, 165, 0, 0.8)' },
+      left_knee: { radius: 25, color: 'rgba(255, 165, 0, 0.3)', strokeColor: 'rgba(255, 165, 0, 0.8)' },
+      right_knee: { radius: 25, color: 'rgba(255, 165, 0, 0.3)', strokeColor: 'rgba(255, 165, 0, 0.8)' },
+      
+      // Shoulders and hips - body core points
+      left_shoulder: { radius: 20, color: 'rgba(128, 128, 128, 0.3)', strokeColor: 'rgba(128, 128, 128, 0.8)' },
+      right_shoulder: { radius: 20, color: 'rgba(128, 128, 128, 0.3)', strokeColor: 'rgba(128, 128, 128, 0.8)' },
+      left_hip: { radius: 20, color: 'rgba(128, 128, 128, 0.3)', strokeColor: 'rgba(128, 128, 128, 0.8)' },
+      right_hip: { radius: 20, color: 'rgba(128, 128, 128, 0.3)', strokeColor: 'rgba(128, 128, 128, 0.8)' }
+    };
+
+    // Draw collision detection areas for high-confidence keypoints
+    keypoints.forEach(keypoint => {
+      if (keypoint.score > 0.3 && collisionAreas[keypoint.name]) {
+        const area = collisionAreas[keypoint.name];
+        
+        // Draw filled collision area
+        ctx.beginPath();
+        ctx.arc(keypoint.x, keypoint.y, area.radius, 0, 2 * Math.PI);
+        ctx.fillStyle = area.color;
+        ctx.fill();
+        
+        // Draw collision area border
+        ctx.beginPath();
+        ctx.arc(keypoint.x, keypoint.y, area.radius, 0, 2 * Math.PI);
+        ctx.strokeStyle = area.strokeColor;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        
+        // Draw keypoint center
+        ctx.beginPath();
+        ctx.arc(keypoint.x, keypoint.y, 6, 0, 2 * Math.PI);
+        ctx.fillStyle = 'white';
+        ctx.fill();
+        
+        // Draw keypoint border
+        ctx.beginPath();
+        ctx.arc(keypoint.x, keypoint.y, 6, 0, 2 * Math.PI);
+        ctx.strokeStyle = 'black';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      } else if (keypoint.score > 0.3) {
+        // Draw regular keypoints for other body parts
+        ctx.beginPath();
+        ctx.arc(keypoint.x, keypoint.y, 4, 0, 2 * Math.PI);
+        ctx.fillStyle = 'white';
+        ctx.fill();
+      }
+    });
+
+    // Enhanced connections with different line weights and colors
+    const connections = [
+      // Head connections - thicker lines
+      { parts: ['left_eye', 'right_eye'], width: 3, color: 'rgba(255, 255, 255, 0.9)' },
+      { parts: ['left_eye', 'left_ear'], width: 2, color: 'rgba(255, 255, 255, 0.7)' },
+      { parts: ['right_eye', 'right_ear'], width: 2, color: 'rgba(255, 255, 255, 0.7)' },
+      { parts: ['left_ear', 'right_ear'], width: 2, color: 'rgba(255, 255, 255, 0.7)' },
+      { parts: ['nose', 'left_eye'], width: 2, color: 'rgba(255, 255, 255, 0.7)' },
+      { parts: ['nose', 'right_eye'], width: 2, color: 'rgba(255, 255, 255, 0.7)' },
+      
+      // Torso connections - medium thickness
+      { parts: ['left_shoulder', 'right_shoulder'], width: 4, color: 'rgba(255, 255, 255, 0.8)' },
+      { parts: ['left_shoulder', 'left_hip'], width: 3, color: 'rgba(255, 255, 255, 0.7)' },
+      { parts: ['right_shoulder', 'right_hip'], width: 3, color: 'rgba(255, 255, 255, 0.7)' },
+      { parts: ['left_hip', 'right_hip'], width: 3, color: 'rgba(255, 255, 255, 0.7)' },
+      
+      // Arm connections - medium thickness
+      { parts: ['left_shoulder', 'left_elbow'], width: 3, color: 'rgba(255, 255, 255, 0.8)' },
+      { parts: ['left_elbow', 'left_wrist'], width: 3, color: 'rgba(255, 255, 255, 0.8)' },
+      { parts: ['right_shoulder', 'right_elbow'], width: 3, color: 'rgba(255, 255, 255, 0.8)' },
+      { parts: ['right_elbow', 'right_wrist'], width: 3, color: 'rgba(255, 255, 255, 0.8)' },
+      
+      // Leg connections - medium thickness
+      { parts: ['left_hip', 'left_knee'], width: 3, color: 'rgba(255, 255, 255, 0.8)' },
+      { parts: ['left_knee', 'left_ankle'], width: 3, color: 'rgba(255, 255, 255, 0.8)' },
+      { parts: ['right_hip', 'right_knee'], width: 3, color: 'rgba(255, 255, 255, 0.8)' },
+      { parts: ['right_knee', 'right_ankle'], width: 3, color: 'rgba(255, 255, 255, 0.8)' }
+    ];
+
+    connections.forEach(({ parts: [start, end], width, color }) => {
+      const startPoint = keypoints.find(kp => kp.name === start);
+      const endPoint = keypoints.find(kp => kp.name === end);
+      
+      if (startPoint && endPoint && startPoint.score > 0.3 && endPoint.score > 0.3) {
+        ctx.beginPath();
+        ctx.moveTo(startPoint.x, startPoint.y);
+        ctx.lineTo(endPoint.x, endPoint.y);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width;
+        ctx.stroke();
+      }
+    });
+  };
+
+  // Enhanced pose detection loop with body tracking and performance optimization
+  const detectPose = async () => {
+    if (!detector || !videoRef.current || !canvasRef.current) return;
+
+    try {
+      const poses = await detector.estimatePoses(videoRef.current);
+      const ctx = canvasRef.current.getContext('2d');
+      
+      // Clear canvas
+      ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+      
+      if (poses && poses.length > 0) {
+        const keypoints = poses[0].keypoints;
+        
+        // Update body part tracking
+        const trackedParts = updateBodyPartTracking(keypoints);
+        
+        // Example: Check for collisions with virtual targets
+        // You can replace this with your game objects
+        const virtualTargets = [
+          { id: 'target1', position: { x: 200, y: 200 }, radius: 30 },
+          { id: 'target2', position: { x: 400, y: 300 }, radius: 25 },
+          { id: 'target3', position: { x: 600, y: 150 }, radius: 35 }
+        ];
+        
+        detectBodyCollisions(trackedParts, virtualTargets);
+        
+        // Draw virtual targets with optimized rendering
+        ctx.save();
+        virtualTargets.forEach(target => {
+          ctx.beginPath();
+          ctx.arc(target.position.x, target.position.y, target.radius, 0, 2 * Math.PI);
+          ctx.fillStyle = 'rgba(255, 0, 0, 0.5)';
+          ctx.fill();
+          ctx.strokeStyle = 'rgba(255, 0, 0, 0.8)';
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        });
+        ctx.restore();
+      }
+      
+      // Draw pose with enhanced tracking
+      drawPose(poses, ctx);
+      
+      // Draw collision events as visual feedback
+      drawCollisionFeedback(ctx);
+      
+    } catch (err) {
+      console.error('Pose detection error:', err);
+    }
+
+    // Use requestAnimationFrame for smooth 60fps tracking
+    animationFrameRef.current = requestAnimationFrame(detectPose);
+  };
+
+  // Draw collision feedback effects
+  const drawCollisionFeedback = (ctx) => {
+    collisionEvents.forEach((event, index) => {
+      if (Date.now() - event.timestamp < 1000) { // Show for 1 second
+        const alpha = 1 - (Date.now() - event.timestamp) / 1000;
+        
+        // Draw collision effect
+        ctx.beginPath();
+        ctx.arc(event.position.x, event.position.y, 50, 0, 2 * Math.PI);
+        ctx.strokeStyle = `rgba(255, 255, 0, ${alpha})`;
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        
+        // Draw collision text
+        ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+        ctx.font = 'bold 16px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText(`HIT!`, event.position.x, event.position.y - 60);
+        ctx.fillText(`${event.bodyPart}`, event.position.x, event.position.y - 40);
+      }
+    });
+  };
 
   const requestCameraPermission = async () => {
     console.log('Button clicked - requesting camera permission');
@@ -23,8 +309,18 @@ export default function ThreeD() {
         console.log('Setting video source...');
         videoRef.current.srcObject = stream;
         
-        videoRef.current.onloadedmetadata = () => {
+        videoRef.current.onloadedmetadata = async () => {
           console.log('Video metadata loaded, dimensions:', videoRef.current.videoWidth, 'x', videoRef.current.videoHeight);
+          
+          // Set canvas dimensions to match video
+          if (canvasRef.current) {
+            canvasRef.current.width = videoRef.current.videoWidth;
+            canvasRef.current.height = videoRef.current.videoHeight;
+          }
+          
+          // Initialize pose detection
+          await initializePoseDetection();
+          
           setCameraActive(true);
           setIsLoading(false);
         };
@@ -51,11 +347,19 @@ export default function ThreeD() {
   };
 
   const stopCamera = () => {
+    // Stop pose detection loop
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+    
+    // Stop camera stream
     if (videoRef.current && videoRef.current.srcObject) {
       const tracks = videoRef.current.srcObject.getTracks();
       tracks.forEach(track => track.stop());
       videoRef.current.srcObject = null;
     }
+    
     setCameraActive(false);
   };
 
@@ -73,8 +377,26 @@ export default function ThreeD() {
       videoRef.current.play().catch(err => {
         console.error('Video play error:', err);
       });
+      
+      // Start pose detection loop
+      if (detector) {
+        detectPose();
+      }
+    } else {
+      // Stop pose detection loop
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+        animationFrameRef.current = null;
+      }
     }
-  }, [cameraActive]);
+    
+    return () => {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+        animationFrameRef.current = null;
+      }
+    };
+  }, [cameraActive, detector]);
 
   return (
     <div className="min-h-screen bg-black flex items-center justify-center relative">
@@ -90,10 +412,13 @@ export default function ThreeD() {
         muted
       />
       
-      {/* Canvas overlay - always present */}
+      {/* Canvas overlay for pose detection */}
       <canvas
         ref={canvasRef}
-        className="hidden"
+        className={cameraActive ? "absolute top-0 left-0 z-20 pointer-events-none" : "hidden"}
+        style={{
+          transform: cameraActive ? 'scaleX(-1)' : 'none'
+        }}
       />
 
       {/* Control overlay when camera is active */}
@@ -105,6 +430,57 @@ export default function ThreeD() {
           >
             ×
           </button>
+        </div>
+      )}
+
+      {/* Body tracking stats overlay */}
+      {cameraActive && (
+        <div className="absolute top-4 left-4 z-20 bg-black/80 text-white p-4 rounded-lg font-mono text-sm max-w-xs">
+          <h3 className="text-lg font-bold mb-2 text-yellow-400">Body Tracking</h3>
+          
+          <div className="space-y-1">
+            <div className="text-yellow-300">Primary (Hands):</div>
+            <div className="ml-2">
+              {trackedBodyParts.left_wrist ? '✓ Left Hand' : '✗ Left Hand'}
+            </div>
+            <div className="ml-2">
+              {trackedBodyParts.right_wrist ? '✓ Right Hand' : '✗ Right Hand'}
+            </div>
+            
+            <div className="text-cyan-300 mt-2">Secondary (Feet):</div>
+            <div className="ml-2">
+              {trackedBodyParts.left_ankle ? '✓ Left Foot' : '✗ Left Foot'}
+            </div>
+            <div className="ml-2">
+              {trackedBodyParts.right_ankle ? '✓ Right Foot' : '✗ Right Foot'}
+            </div>
+            
+            <div className="text-purple-300 mt-2">Special (Head):</div>
+            <div className="ml-2">
+              {trackedBodyParts.nose ? '✓ Head' : '✗ Head'}
+            </div>
+            
+            <div className="text-orange-300 mt-2">Tertiary (Joints):</div>
+            <div className="ml-2">
+              {trackedBodyParts.left_elbow ? '✓ Left Elbow' : '✗ Left Elbow'}
+            </div>
+            <div className="ml-2">
+              {trackedBodyParts.right_elbow ? '✓ Right Elbow' : '✗ Right Elbow'}
+            </div>
+            <div className="ml-2">
+              {trackedBodyParts.left_knee ? '✓ Left Knee' : '✗ Left Knee'}
+            </div>
+            <div className="ml-2">
+              {trackedBodyParts.right_knee ? '✓ Right Knee' : '✗ Right Knee'}
+            </div>
+          </div>
+          
+          <div className="mt-3 pt-2 border-t border-gray-600">
+            <div className="text-green-300">Collisions: {collisionEvents.length}</div>
+            <div className="text-xs text-gray-400 mt-1">
+              Try touching the red targets with any tracked body part!
+            </div>
+          </div>
         </div>
       )}
 
