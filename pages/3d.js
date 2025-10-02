@@ -2,6 +2,8 @@ import { useState, useRef, useEffect } from 'react';
 import * as tf from '@tensorflow/tfjs';
 import * as poseDetection from '@tensorflow-models/pose-detection';
 
+// Note: We'll lazy-load MediaPipe Tasks Hand Landmarker at runtime to avoid SSR issues
+
 export default function ThreeD() {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -19,6 +21,9 @@ export default function ThreeD() {
   const [trackedBodyParts, setTrackedBodyParts] = useState({});
   const [collisionEvents, setCollisionEvents] = useState([]);
   const [bodyPartStats, setBodyPartStats] = useState({});
+  const handLandmarkerRef = useRef(null);
+  const visionFilesetRef = useRef(null);
+  const lastVideoTsRef = useRef(0);
 
   // Body tracking utilities
   const getBodyPartPosition = (keypoints, bodyPartName) => {
@@ -105,6 +110,24 @@ export default function ThreeD() {
       
       setDetector(poseDetector);
       console.log('Pose detection initialized successfully');
+
+      // Lazy-load MediaPipe Hand Landmarker
+      if (typeof window !== 'undefined' && !handLandmarkerRef.current) {
+        const vision = await import('@mediapipe/tasks-vision');
+        const fileset = await vision.FilesetResolver.forVisionTasks(
+          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
+        );
+        visionFilesetRef.current = fileset;
+        handLandmarkerRef.current = await vision.HandLandmarker.createFromOptions(fileset, {
+          baseOptions: {
+            modelAssetPath:
+              'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task'
+          },
+          numHands: 2,
+          runningMode: 'VIDEO'
+        });
+        console.log('Hand Landmarker initialized');
+      }
     } catch (err) {
       console.error('Error initializing pose detection:', err);
       setError('Failed to initialize pose detection');
@@ -278,6 +301,17 @@ export default function ThreeD() {
         ctx.restore();
       }
       
+      // Hand landmarks per frame
+      if (handLandmarkerRef.current) {
+        const now = performance.now();
+        lastVideoTsRef.current = now;
+        const handResult = handLandmarkerRef.current.detectForVideo(videoRef.current, now);
+        if (handResult && handResult.landmarks) {
+          drawHands(ctx, handResult.landmarks, scale, drawX, drawY);
+          drawFingertipMarkers(ctx, handResult.landmarks, scale, drawX, drawY);
+        }
+      }
+
       // Draw pose with enhanced tracking using mapped keypoints
       const mappedPoses = poses && poses.length > 0 ? [{ keypoints: poses[0].keypoints.map(kp => ({ ...kp, x: kp.x * scale + drawX, y: kp.y * scale + drawY })) }] : poses;
       drawPose(mappedPoses, ctx);
@@ -291,6 +325,71 @@ export default function ThreeD() {
 
     // Use requestAnimationFrame for smooth 60fps tracking
     animationFrameRef.current = requestAnimationFrame(detectPose);
+  };
+
+  // Draw MediaPipe hand landmarks and connections
+  const drawHands = (ctx, handsLandmarks, scale, drawX, drawY) => {
+    const connections = [
+      // Thumb
+      [0,1],[1,2],[2,3],[3,4],
+      // Index
+      [0,5],[5,6],[6,7],[7,8],
+      // Middle
+      [0,9],[9,10],[10,11],[11,12],
+      // Ring
+      [0,13],[13,14],[14,15],[15,16],
+      // Pinky
+      [0,17],[17,18],[18,19],[19,20]
+    ];
+
+    handsLandmarks.forEach(points => {
+      // draw connections
+      ctx.strokeStyle = 'rgba(0, 255, 127, 0.9)';
+      ctx.lineWidth = 2;
+      connections.forEach(([a,b]) => {
+        const pa = points[a];
+        const pb = points[b];
+        // MediaPipe returns normalized [0,1] coords relative to input image
+        const ax = pa.x * renderStateRef.current.videoW * scale + drawX;
+        const ay = pa.y * renderStateRef.current.videoH * scale + drawY;
+        const bx = pb.x * renderStateRef.current.videoW * scale + drawX;
+        const by = pb.y * renderStateRef.current.videoH * scale + drawY;
+        ctx.beginPath();
+        ctx.moveTo(ax, ay);
+        ctx.lineTo(bx, by);
+        ctx.stroke();
+      });
+      // draw keypoints
+      points.forEach(p => {
+        const x = p.x * renderStateRef.current.videoW * scale + drawX;
+        const y = p.y * renderStateRef.current.videoH * scale + drawY;
+        ctx.beginPath();
+        ctx.arc(x, y, 3, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(0, 255, 127, 0.9)';
+        ctx.fill();
+      });
+    });
+  };
+
+  // Draw highlighted fingertip markers (thumb, index, middle, ring, pinky tips)
+  const drawFingertipMarkers = (ctx, handsLandmarks, scale, drawX, drawY) => {
+    const tips = [4, 8, 12, 16, 20];
+    handsLandmarks.forEach(points => {
+      tips.forEach(i => {
+        const p = points[i];
+        const x = p.x * renderStateRef.current.videoW * scale + drawX;
+        const y = p.y * renderStateRef.current.videoH * scale + drawY;
+        ctx.beginPath();
+        ctx.arc(x, y, 6, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255, 215, 0, 0.9)';
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(x, y, 10, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(255, 215, 0, 0.6)';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      });
+    });
   };
 
   // Draw collision feedback effects
@@ -520,6 +619,9 @@ export default function ThreeD() {
             <div className="text-green-300">Collisions: {collisionEvents.length}</div>
             <div className="text-xs text-gray-400 mt-1">
               Try touching the red targets with any tracked body part!
+            </div>
+            <div className="text-xs text-gray-300 mt-2">
+              Hands model: {handLandmarkerRef.current ? 'on' : 'off'}
             </div>
           </div>
         </div>
