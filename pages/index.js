@@ -59,12 +59,19 @@ export default function Home() {
         </pre>
         
         {/* Simple navigation */}
-        <div className="mt-16">
+        <div className="mt-16 flex items-center justify-center gap-6">
+          <appkit-button />
           <a 
             href="/3d" 
             className="text-white hover:text-gray-300 font-mono text-sm transition-colors animate-pulse"
           >
-            →
+            Pose Demo →
+          </a>
+          <a 
+            href="/robot-arm" 
+            className="text-white hover:text-gray-300 font-mono text-sm transition-colors animate-pulse"
+          >
+            Robot Arm →
           </a>
         </div>
       </div>
