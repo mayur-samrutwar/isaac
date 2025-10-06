@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { GLTFLoader, OrbitControls } from 'three-stdlib';
+import LeftMenu from '../components/LeftMenu';
 
 export default function Home() {
   const miraMountRef = useRef(null);
@@ -190,8 +191,10 @@ export default function Home() {
     };
   }, []);
   return (
-    <div className="min-h-screen bg-white text-black flex flex-col items-center justify-center">
-      <div className="relative w-[340px] h-[340px] md:w-[640px] md:h-[640px]">
+    <div className="min-h-screen bg-white text-black">
+      <LeftMenu />
+      <div id="home" className="flex flex-col items-center justify-center pt-10 md:pt-16">
+      <div className="relative w-[340px] h-[340px] md:w-[640px] md:h-[640px] mt-2 md:mt-4">
         {/* Background texts behind robot */}
         <div className="pointer-events-none absolute inset-0 grid place-items-center select-none">
           <div className="text-black/5 font-semibold tracking-tight text-8xl md:text-[14rem] leading-none">ISAAC</div>
@@ -205,8 +208,8 @@ export default function Home() {
       </div>
       {/* Headline and subtext */}
       <div className="mt-8 text-center px-6">
-        <h1 className="text-2xl md:text-4xl font-semibold tracking-tight">Global motion data for humanoid robots</h1>
-        <p className="mt-3 text-sm md:text-base text-black/60 font-normal">
+        <h1 className="text-3xl md:text-5xl font-semibold tracking-tight">Global motion data for humanoid robots</h1>
+        <p className="mt-4 text-base md:text-lg text-black/60 font-normal">
           Perform precise actions. Your movement trains high‑fidelity control models at scale.
         </p>
       </div>
@@ -218,6 +221,29 @@ export default function Home() {
       >
         ↓
       </button>
+      </div>
+      {/* About section for left menu anchor */}
+      <section id="train" className="min-h-screen flex items-center justify-center px-6">
+        <div className="max-w-xl text-center">
+          <p className="text-base md:text-lg text-black/60">
+            Train high‑fidelity motion models by contributing precise human movement data.
+          </p>
+        </div>
+      </section>
+      <section id="companies" className="min-h-screen flex items-center justify-center px-6">
+        <div className="max-w-xl text-center">
+          <p className="text-base md:text-lg text-black/60">
+            Companies integrate ISAAC motion intelligence to accelerate humanoid deployment.
+          </p>
+        </div>
+      </section>
+      <section id="about" className="min-h-screen flex items-center justify-center px-6">
+        <div className="max-w-xl text-center">
+          <p className="text-base md:text-lg text-black/60">
+            We build motion intelligence for next‑generation humanoid robots.
+          </p>
+        </div>
+      </section>
     </div>
   );
 }
