@@ -167,6 +167,14 @@ export default function Home() {
     mountEl.addEventListener('pointerenter', onPointerEnter);
     mountEl.addEventListener('pointerleave', onPointerLeave);
 
+    // Ensure page remains scrollable: block OrbitControls from intercepting wheel
+    const canvasEl = renderer.domElement;
+    const onWheelCapture = (e) => {
+      // prevent OrbitControls from seeing the wheel so the page scrolls
+      e.stopImmediatePropagation();
+    };
+    canvasEl.addEventListener('wheel', onWheelCapture, { capture: true });
+
     return () => {
       window.removeEventListener('resize', onResize);
       if (miraAnimRef.current) cancelAnimationFrame(miraAnimRef.current);
@@ -183,6 +191,7 @@ export default function Home() {
           mountEl.removeEventListener('pointerleave', onPointerLeave);
         } catch {}
       }
+      try { canvasEl.removeEventListener('wheel', onWheelCapture, { capture: true }); } catch {}
       miraRendererRef.current = null;
       miraSceneRef.current = null;
       miraCameraRef.current = null;
@@ -191,7 +200,7 @@ export default function Home() {
     };
   }, []);
   return (
-    <div className="min-h-screen bg-white text-black">
+    <div className="min-h-screen bg-white text-black scroll-smooth">
       <LeftMenu />
       <div id="home" className="flex flex-col items-center justify-center pt-10 md:pt-16">
       <div className="relative w-[340px] h-[340px] md:w-[640px] md:h-[640px] mt-2 md:mt-4">
@@ -207,20 +216,15 @@ export default function Home() {
         <div ref={miraMountRef} className="relative w-full h-full" />
       </div>
       {/* Headline and subtext */}
-      <div className="mt-8 text-center px-6">
-        <h1 className="text-3xl md:text-5xl font-semibold tracking-tight">Global motion data for humanoid robots</h1>
-        <p className="mt-4 text-base md:text-lg text-black/60 font-normal">
-          Perform precise actions. Your movement trains high‑fidelity control models at scale.
+      <div className="mt-4 md:mt-6 text-center px-6">
+        <h1 className="text-4xl md:text-6xl font-semibold tracking-tight leading-tight text-black/80">
+          Motion intelligence for robots
+        </h1>
+        <p className="mt-5 text-lg md:text-xl text-black/60 font-normal">
+          Perform precise actions. Your movement trains high‑fidelity control models at scale. Earn rewards.
         </p>
       </div>
-      {/* Scroll down button */}
-      <button
-        onClick={handleScrollDown}
-        aria-label="Scroll down"
-        className="fixed bottom-6 left-1/2 -translate-x-1/2 rounded-full border border-black/20 bg-white px-4 py-2 text-xs font-mono hover:bg-black hover:text-white transition-colors"
-      >
-        ↓
-      </button>
+      {/* Scroll down button removed */}
       </div>
       {/* About section for left menu anchor */}
       <section id="train" className="min-h-screen flex items-center justify-center px-6">
