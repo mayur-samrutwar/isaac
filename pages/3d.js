@@ -22,8 +22,15 @@ export default function ThreeD() {
   const [collisionEvents, setCollisionEvents] = useState([]);
   const [bodyPartStats, setBodyPartStats] = useState({});
   const handLandmarkerRef = useRef(null);
+  const holisticLandmarkerRef = useRef(null);
   const visionFilesetRef = useRef(null);
   const lastVideoTsRef = useRef(0);
+  
+  // Data recording state
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingTime, setRecordingTime] = useState(0);
+  const sessionDataRef = useRef([]);
+  const recordingIntervalRef = useRef(null);
 
   // Body tracking utilities
   const getBodyPartPosition = (keypoints, bodyPartName) => {
@@ -111,22 +118,53 @@ export default function ThreeD() {
       setDetector(poseDetector);
       console.log('Pose detection initialized successfully');
 
-      // Lazy-load MediaPipe Hand Landmarker
+      // Lazy-load MediaPipe Hand Landmarker for detailed hand tracking
       if (typeof window !== 'undefined' && !handLandmarkerRef.current) {
         const vision = await import('@mediapipe/tasks-vision');
         const fileset = await vision.FilesetResolver.forVisionTasks(
           'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
         );
         visionFilesetRef.current = fileset;
-        handLandmarkerRef.current = await vision.HandLandmarker.createFromOptions(fileset, {
-          baseOptions: {
-            modelAssetPath:
-              'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task'
-          },
-          numHands: 2,
-          runningMode: 'VIDEO'
-        });
-        console.log('Hand Landmarker initialized');
+        
+        console.log('Initializing Hand Landmarker...');
+        console.log('Fileset:', fileset);
+        
+        // Initialize Hand Landmarker for detailed hand tracking
+        try {
+          handLandmarkerRef.current = await vision.HandLandmarker.createFromOptions(fileset, {
+            baseOptions: {
+              modelAssetPath:
+                'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task',
+              delegate: 'GPU'
+            },
+            numHands: 2,
+            runningMode: 'VIDEO',
+            minHandDetectionConfidence: 0.2,
+            minHandPresenceConfidence: 0.2,
+            minTrackingConfidence: 0.2
+          });
+          console.log('Hand Landmarker initialized successfully');
+        } catch (error) {
+          console.error('Failed to initialize Hand Landmarker:', error);
+          // Try with CPU instead of GPU
+          try {
+            handLandmarkerRef.current = await vision.HandLandmarker.createFromOptions(fileset, {
+              baseOptions: {
+                modelAssetPath:
+                  'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task',
+                delegate: 'CPU'
+              },
+              numHands: 2,
+              runningMode: 'VIDEO',
+              minHandDetectionConfidence: 0.2,
+              minHandPresenceConfidence: 0.2,
+              minTrackingConfidence: 0.2
+            });
+            console.log('Hand Landmarker initialized successfully with CPU');
+          } catch (cpuError) {
+            console.error('Failed to initialize Hand Landmarker even with CPU:', cpuError);
+          }
+        }
       }
     } catch (err) {
       console.error('Error initializing pose detection:', err);
@@ -292,15 +330,52 @@ export default function ThreeD() {
         ctx.restore();
       }
       
-      // Hand landmarks per frame
+      // Hand landmarks per frame (detailed hand tracking)
       if (handLandmarkerRef.current) {
+        // Ensure video is ready and has dimensions before running detection
+        const vid = videoRef.current;
+        if (!vid || vid.videoWidth === 0 || vid.videoHeight === 0 || vid.readyState < 2) {
+          // 2 = HAVE_CURRENT_DATA
+          // Uncomment for verbose logging if needed:
+          // console.log('Video not ready for detection', { w: vid?.videoWidth, h: vid?.videoHeight, rs: vid?.readyState });
+          animationFrameRef.current = requestAnimationFrame(detectPose);
+          return;
+        }
+
         const now = performance.now();
         lastVideoTsRef.current = now;
         const handResult = handLandmarkerRef.current.detectForVideo(videoRef.current, now);
-        if (handResult && handResult.landmarks) {
+        
+        // Debug hand detection
+        if (handResult) {
+          console.log('Hand result:', handResult);
+          console.log('Hand landmarks count:', handResult.landmarks ? handResult.landmarks.length : 0);
+          if (handResult.landmarks && handResult.landmarks.length > 0) {
+            console.log('First hand landmarks:', handResult.landmarks[0].length);
+          }
+        }
+        
+        // Record data if recording
+        if (isRecording && handResult) {
+          console.log('Recording frame - handResult exists:', !!handResult);
+          console.log('handResult landmarks:', handResult.landmarks);
+          console.log('handResult worldLandmarks:', handResult.worldLandmarks);
+          console.log('poses:', poses);
+          recordFrameData(handResult, poses, now);
+          console.log('Recorded frame data. Total frames:', sessionDataRef.current.length);
+        } else if (isRecording && !handResult) {
+          console.log('Recording but no handResult available');
+        }
+        
+        // Draw hand landmarks and fingertips
+        if (handResult && handResult.landmarks && handResult.landmarks.length > 0) {
           drawHands(ctx, handResult.landmarks, scale, drawX, drawY);
           drawFingertipMarkers(ctx, handResult.landmarks, scale, drawX, drawY);
+        } else {
+          console.log('Not drawing hands - no landmarks available');
         }
+      } else {
+        console.log('Hand landmarker not initialized');
       }
 
       // Draw pose with enhanced tracking using mapped keypoints
@@ -316,6 +391,195 @@ export default function ThreeD() {
 
     // Use requestAnimationFrame for smooth 60fps tracking
     animationFrameRef.current = requestAnimationFrame(detectPose);
+  };
+
+
+  // Record frame data for training
+  const recordFrameData = (handResult, poses, timestamp) => {
+    const frameData = {
+      timestamp,
+      frameNumber: sessionDataRef.current.length,
+      videoMeta: {
+        width: renderStateRef.current.videoW,
+        height: renderStateRef.current.videoH,
+        canvasWidth: canvasRef.current.width,
+        canvasHeight: canvasRef.current.height,
+        scale: renderStateRef.current.scale,
+        drawX: renderStateRef.current.drawX,
+        drawY: renderStateRef.current.drawY,
+        mirrored: true
+      },
+      pose2d: poses && poses.length > 0 ? poses[0].keypoints.map(kp => ({
+        name: kp.name,
+        x: kp.x,
+        y: kp.y,
+        score: kp.score
+      })) : [],
+      hands2d: handResult.landmarks ? handResult.landmarks.map(hand => 
+        hand.map(l => ({ x: l.x, y: l.y, z: l.z }))
+      ) : [],
+      hands3d: handResult.worldLandmarks ? handResult.worldLandmarks.map(hand => 
+        hand.map(l => ({ x: l.x, y: l.y, z: l.z }))
+      ) : [],
+      handedness: handResult.handedness ? handResult.handedness.map(h => 
+        h[0] ? { category: h[0].categoryName, score: h[0].score } : null
+      ) : []
+    };
+    
+    sessionDataRef.current.push(frameData);
+  };
+
+  // Start recording session
+  const startRecording = () => {
+    console.log('startRecording called, cameraActive:', cameraActive);
+    
+    if (!cameraActive) {
+      setError('Camera must be active to record');
+      return;
+    }
+    
+    console.log('Starting recording session...');
+    setIsRecording(true);
+    setRecordingTime(0);
+    sessionDataRef.current = [];
+    
+    // Start timer
+    recordingIntervalRef.current = setInterval(() => {
+      setRecordingTime(prev => {
+        if (prev >= 9.9) {
+          console.log('Recording time limit reached, stopping...');
+          stopRecording();
+          return 10;
+        }
+        return prev + 0.1;
+      });
+    }, 100);
+    
+    console.log('Recording started successfully');
+  };
+
+  // Stop recording and save data
+  const stopRecording = () => {
+    console.log('stopRecording called');
+    console.log('Session data length:', sessionDataRef.current.length);
+    
+    setIsRecording(false);
+    if (recordingIntervalRef.current) {
+      clearInterval(recordingIntervalRef.current);
+      recordingIntervalRef.current = null;
+    }
+    
+    if (sessionDataRef.current.length > 0) {
+      console.log('Saving session data with', sessionDataRef.current.length, 'frames');
+      saveSessionData();
+    } else {
+      console.log('No data to save - session data is empty');
+    }
+  };
+
+  // Save session data to file
+  const saveSessionData = () => {
+    console.log('saveSessionData called');
+    console.log('Recording time:', recordingTime);
+    console.log('Frame count:', sessionDataRef.current.length);
+    
+    const sessionId = `session_${Date.now()}`;
+    const metadata = {
+      sessionId,
+      timestamp: new Date().toISOString(),
+      duration: recordingTime,
+      frameCount: sessionDataRef.current.length,
+      fps: sessionDataRef.current.length / recordingTime,
+      device: {
+        userAgent: navigator.userAgent,
+        platform: navigator.platform,
+        language: navigator.language
+      },
+      schemaVersion: '1.0'
+    };
+    
+    console.log('Created metadata:', metadata);
+    
+    // Create binary data
+    const binaryData = createBinaryData(sessionDataRef.current);
+    console.log('Created binary data, size:', binaryData.byteLength);
+    
+    // Create JSON metadata
+    const jsonData = JSON.stringify(metadata, null, 2);
+    console.log('Created JSON metadata, size:', jsonData.length);
+    
+    // Download files
+    try {
+      console.log('Attempting to download files...');
+      downloadFile(`${sessionId}_data.bin`, binaryData, 'application/octet-stream');
+      downloadFile(`${sessionId}_meta.json`, jsonData, 'application/json');
+      
+      console.log(`Session saved: ${sessionId} (${sessionDataRef.current.length} frames)`);
+      
+      // Show user notification
+      alert(`Recording saved!\n\nFiles downloaded:\n- ${sessionId}_data.bin (pose/hand data)\n- ${sessionId}_meta.json (metadata)\n\nCheck your Downloads folder.`);
+    } catch (error) {
+      console.error('Download failed:', error);
+      alert(`Failed to save recording: ${error.message}`);
+    }
+  };
+
+  // Create binary data format
+  const createBinaryData = (frames) => {
+    const buffer = new ArrayBuffer(frames.length * 4 * 1000); // Estimate size
+    const view = new DataView(buffer);
+    let offset = 0;
+    
+    // Write frame count
+    view.setUint32(offset, frames.length, true);
+    offset += 4;
+    
+    frames.forEach(frame => {
+      // Write timestamp
+      view.setFloat64(offset, frame.timestamp, true);
+      offset += 8;
+      
+      // Write frame number
+      view.setUint32(offset, frame.frameNumber, true);
+      offset += 4;
+      
+      // Write pose 2D landmarks (17 * 3 floats)
+      frame.pose2d.forEach(landmark => {
+        view.setFloat32(offset, landmark.x, true);
+        offset += 4;
+        view.setFloat32(offset, landmark.y, true);
+        offset += 4;
+        view.setFloat32(offset, landmark.score, true);
+        offset += 4;
+      });
+      
+      // Write hand 3D landmarks
+      frame.hands3d.forEach(hand => {
+        hand.forEach(landmark => {
+          view.setFloat32(offset, landmark.x, true);
+          offset += 4;
+          view.setFloat32(offset, landmark.y, true);
+          offset += 4;
+          view.setFloat32(offset, landmark.z, true);
+          offset += 4;
+        });
+      });
+    });
+    
+    return buffer.slice(0, offset);
+  };
+
+  // Download file utility
+  const downloadFile = (filename, data, mimeType) => {
+    const blob = new Blob([data], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   // Draw MediaPipe hand landmarks and connections
@@ -548,6 +812,41 @@ export default function ThreeD() {
       />
 
       {/* Control overlay removed; info card removed as requested */}
+
+      {/* Recording controls overlay */}
+      {cameraActive && (
+        <div className="fixed top-20 right-4 z-20 bg-black/80 text-white p-4 rounded-lg font-mono text-sm">
+          <div className="space-y-3">
+            <div className="text-center">
+              <div className="text-lg font-bold text-yellow-400">Recording Session</div>
+              <div className="text-2xl font-mono">
+                {isRecording ? `${recordingTime.toFixed(1)}s` : 'Ready'}
+              </div>
+            </div>
+            
+            <button
+              onClick={isRecording ? stopRecording : startRecording}
+              disabled={!cameraActive}
+              className={`
+                w-full px-4 py-2 rounded font-mono text-sm transition-all
+                ${isRecording 
+                  ? 'bg-red-600 hover:bg-red-700 text-white' 
+                  : 'bg-green-600 hover:bg-green-700 text-white'
+                }
+                disabled:opacity-50 disabled:cursor-not-allowed
+              `}
+            >
+              {isRecording ? 'Stop Recording' : 'Start Recording'}
+            </button>
+            
+            {isRecording && (
+              <div className="text-center text-xs text-gray-300">
+                Recording 10s session...
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Button interface when camera is not active */}
       {!cameraActive && (
