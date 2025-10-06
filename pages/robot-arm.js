@@ -10,6 +10,10 @@ export default function ProceduralRobotArm() {
   const robotArmRef = useRef(null);
   const animationFrameRef = useRef(null);
   const controlsRef = useRef(null);
+  const ballRef = useRef(null);
+  const ballVelocityRef = useRef(new THREE.Vector3(0, 0, 0));
+  const isBallHeldRef = useRef(true);
+  const clockRef = useRef(null);
   
   // Joint angles (in radians)
   const [jointAngles, setJointAngles] = useState({
@@ -63,9 +67,56 @@ export default function ProceduralRobotArm() {
     scene.add(robotArm);
     robotArmRef.current = robotArm;
 
+    // Create ball and place it between the gripper fingers (initially held)
+    const ballGeometry = new THREE.SphereGeometry(0.09, 24, 16);
+    const ballMaterial = new THREE.MeshStandardMaterial({ color: 0xff5533, metalness: 0.1, roughness: 0.4 });
+    const ball = new THREE.Mesh(ballGeometry, ballMaterial);
+    ball.castShadow = true;
+    ball.receiveShadow = true;
+    // Attach to wrist joint so it moves with the gripper while held
+    const { wristJoint } = robotArm.userData;
+    ball.position.set(0, 0.3, 0);
+    wristJoint.add(ball);
+    ballRef.current = ball;
+    isBallHeldRef.current = true;
+    ballVelocityRef.current.set(0, 0, 0);
+
+    // Clock for physics integration
+    clockRef.current = new THREE.Clock();
+
     // Animation loop
     const animate = () => {
       animationFrameRef.current = requestAnimationFrame(animate);
+      const dt = Math.min(clockRef.current.getDelta ? clockRef.current.getDelta() : 0.016, 0.05);
+
+      // Simple gravity physics for the ball when released
+      const ball = ballRef.current;
+      if (ball && !isBallHeldRef.current) {
+        // Integrate velocity
+        ballVelocityRef.current.y += -9.8 * dt; // gravity
+
+        // Update position
+        ball.position.x += ballVelocityRef.current.x * dt;
+        ball.position.y += ballVelocityRef.current.y * dt;
+        ball.position.z += ballVelocityRef.current.z * dt;
+
+        // Ground collision at y = 0 (grid plane)
+        const radius = 0.09;
+        if (ball.position.y - radius <= 0) {
+          ball.position.y = radius;
+          // Bounce with restitution
+          ballVelocityRef.current.y *= -0.4;
+          // Friction on horizontal motion
+          ballVelocityRef.current.x *= 0.8;
+          ballVelocityRef.current.z *= 0.8;
+
+          // Sleep threshold
+          if (Math.abs(ballVelocityRef.current.y) < 0.2) {
+            ballVelocityRef.current.set(0, 0, 0);
+          }
+        }
+      }
+
       controls.update();
       renderer.render(scene, camera);
     };
@@ -85,8 +136,55 @@ export default function ProceduralRobotArm() {
 
   // Update robot arm when joint angles change
   useEffect(() => {
-    if (robotArmRef.current) {
-      updateRobotArmPose(robotArmRef.current, jointAngles);
+    if (!robotArmRef.current) return;
+    updateRobotArmPose(robotArmRef.current, jointAngles);
+
+    // Manage ball hold/release based on gripper openness
+    const ball = ballRef.current;
+    const { wristJoint, leftFinger, rightFinger } = robotArmRef.current.userData;
+    if (!ball || !wristJoint) return;
+
+    const fingerGap = Math.abs(rightFinger.position.x - leftFinger.position.x); // ~0.2 when closed
+    const holdThreshold = 0.22; // if wider than this, release
+
+    if (isBallHeldRef.current) {
+      // Keep ball positioned between fingers while held
+      if (ball.parent !== wristJoint) {
+        wristJoint.add(ball);
+      }
+      ball.position.set(0, 0.3, 0);
+
+      // If opened beyond threshold, release the ball into world space
+      if (fingerGap > holdThreshold) {
+        // Convert local position to world and reparent to scene
+        const worldPos = new THREE.Vector3();
+        ball.getWorldPosition(worldPos);
+        sceneRef.current.add(ball);
+        ball.position.copy(worldPos);
+        isBallHeldRef.current = false;
+
+        // Give initial velocity based on wrist movement (approx; here zero)
+        ballVelocityRef.current.set(0, 0, 0);
+      }
+    } else {
+      // If closed sufficiently near the ball and ball is near the gripper, grab it
+      const closeThreshold = 0.18;
+      if (fingerGap < closeThreshold) {
+        // Check proximity to gripper
+        const gripperWorld = new THREE.Vector3();
+        wristJoint.getWorldPosition(gripperWorld);
+        const ballWorld = new THREE.Vector3();
+        ball.getWorldPosition(ballWorld);
+        if (ballWorld.distanceTo(gripperWorld) < 0.2) {
+          // Snap back to held state
+          const localPos = new THREE.Vector3(0, 0.3, 0);
+          // Move ball under wristJoint maintaining intended offset
+          wristJoint.add(ball);
+          ball.position.copy(localPos);
+          isBallHeldRef.current = true;
+          ballVelocityRef.current.set(0, 0, 0);
+        }
+      }
     }
   }, [jointAngles]);
 
@@ -292,7 +390,19 @@ export default function ProceduralRobotArm() {
         </div>
         
         <button
-          onClick={() => setJointAngles({ base: 0, shoulder: 0, elbow: 0, wrist: 0, gripper: 0 })}
+          onClick={() => {
+            setJointAngles({ base: 0, shoulder: 0, elbow: 0, wrist: 0, gripper: 0 });
+            // Reset ball state
+            const arm = robotArmRef.current;
+            const ball = ballRef.current;
+            if (arm && ball) {
+              const { wristJoint } = arm.userData;
+              wristJoint.add(ball);
+              ball.position.set(0, 0.3, 0);
+              isBallHeldRef.current = true;
+              ballVelocityRef.current.set(0, 0, 0);
+            }
+          }}
           className="mt-4 w-full bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded text-sm transition-colors"
         >
           Reset Pose
