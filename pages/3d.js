@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import ActionSelector from '@/components/ActionSelector';
 import * as tf from '@tensorflow/tfjs';
 import * as poseDetection from '@tensorflow-models/pose-detection';
 
@@ -31,6 +32,7 @@ export default function ThreeD() {
   const [recordingTime, setRecordingTime] = useState(0);
   const sessionDataRef = useRef([]);
   const recordingIntervalRef = useRef(null);
+  const [selectedAction, setSelectedAction] = useState('');
 
   // Body tracking utilities
   const getBodyPartPosition = (keypoints, bodyPartName) => {
@@ -431,6 +433,10 @@ export default function ThreeD() {
 
   // Start recording session
   const startRecording = () => {
+    if (!selectedAction) {
+      setError('Select an action before recording');
+      return;
+    }
     console.log('startRecording called, cameraActive:', cameraActive);
     
     if (!cameraActive) {
@@ -490,6 +496,7 @@ export default function ThreeD() {
       duration: recordingTime,
       frameCount: sessionDataRef.current.length,
       fps: sessionDataRef.current.length / recordingTime,
+      action: selectedAction || null,
       device: {
         userAgent: navigator.userAgent,
         platform: navigator.platform,
@@ -823,6 +830,17 @@ export default function ThreeD() {
                 {isRecording ? `${recordingTime.toFixed(1)}s` : 'Ready'}
               </div>
             </div>
+            <ActionSelector
+              actions={[
+                { id: 'move_object', label: 'Move object' },
+                { id: 'open_door', label: 'Open door' },
+                { id: 'walk', label: 'Walk' },
+                { id: 'run', label: 'Run' }
+              ]}
+              value={selectedAction}
+              onChange={setSelectedAction}
+              disabled={isRecording}
+            />
             
             <button
               onClick={isRecording ? stopRecording : startRecording}
@@ -853,6 +871,18 @@ export default function ThreeD() {
         <div className="text-center">
           {/* Camera permission button */}
           <div className="space-y-6">
+            <div className="flex items-center justify-center">
+              <ActionSelector
+                actions={[
+                  { id: 'move_object', label: 'Move object' },
+                  { id: 'open_door', label: 'Open door' },
+                  { id: 'walk', label: 'Walk' },
+                  { id: 'run', label: 'Run' }
+                ]}
+                value={selectedAction}
+                onChange={setSelectedAction}
+              />
+            </div>
             <button
               onClick={() => {
                 console.log('Button clicked!');
