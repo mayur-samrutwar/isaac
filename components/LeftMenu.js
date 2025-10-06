@@ -1,9 +1,9 @@
 export default function LeftMenu() {
   const items = [
-    { label: 'HOME', href: '#home' },
-    { label: 'TRAIN', href: '#train' },
-    { label: 'COMPANIES', href: '#companies' },
-    { label: 'ABOUT US', href: '#about' },
+    { label: 'HOME', href: '/' },
+    { label: 'TRAIN', href: '/train' },
+    { label: 'COMPANIES', href: '/companies' },
+    { label: 'ABOUT US', href: '/about' },
   ];
 
   return (
